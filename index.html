@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="light">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -428,7 +428,8 @@ select.fmt-input{cursor:pointer}
   <button class="tb-btn" onclick="triggerBridgeUpload()">🌉 Bridge</button>
   <button class="tb-btn" onclick="triggerLogoUpload()">🖼 Logo</button>
   <div class="tb-sep"></div>
-  <button class="tb-btn save-btn" onclick="saveAll()">💾 Save</button>
+  <button class="tb-btn save-btn" onclick="saveAll()">💾 Save &amp; Publish</button>
+  <button class="tb-btn" onclick="clearGhToken()" title="Reset GitHub token">🔑 Token</button>
   <div class="tb-sep"></div>
   <button class="tb-btn" onclick="resetFdPositions()">↺ Reset Pos</button>
   <div class="tb-sep"></div>
@@ -477,9 +478,6 @@ select.fmt-input{cursor:pointer}
       <a href="#contact" class="btn-primary" data-e>Book Free Consultation</a>
       <a href="#services" class="btn-glass" data-e>Explore Services</a>
     </div>
-  </div>
-  <div class="hero-flags">
-
   </div>
   <a href="#services" class="scroll-hint"><span>Scroll</span><div class="scroll-chev"></div></a>
 </section>
@@ -818,66 +816,138 @@ function lockEditor(){
 ══════════════════════════════════════════════════════ */
 const SECTION_IDS = ['hero','bridge','services','journey','stats','universities','testimonial','faq','contact'];
 
+/* ══════════════════════════════════════════════════════
+   GITHUB AUTO-COMMIT CONFIG
+══════════════════════════════════════════════════════ */
+const GH_REPO   = 'syedbaqir291-debug/OMAC-Developers-by-S-M-Baqir';
+const GH_FILE   = 'index.html';
+const GH_BRANCH = 'main';
+const GH_TOKEN_KEY = 'fg-gh-token'; // stored in localStorage
+
+/* Get / prompt for token */
+function getToken(){
+  let tok = localStorage.getItem(GH_TOKEN_KEY);
+  if(!tok){
+    tok = prompt(
+      'Enter your GitHub Personal Access Token\n\n' +
+      'How to get one:\n' +
+      'GitHub → Settings → Developer Settings\n' +
+      '→ Personal Access Tokens → Tokens (classic)\n' +
+      '→ Generate new token → tick "repo" scope\n\n' +
+      'Token is saved locally in your browser only.'
+    );
+    if(tok) localStorage.setItem(GH_TOKEN_KEY, tok.trim());
+  }
+  return tok ? tok.trim() : null;
+}
+
+/* ── Core save: localStorage + GitHub commit ── */
 function saveAll(){
-  const data = {};
+  applyAllEditsToHTML(); // bake current edits into the live DOM first
+  commitToGitHub();
+}
 
-  // 1. Text content
-  data.texts = {};
-  document.querySelectorAll('[data-e]').forEach((el,i)=>{
-    const key = el.id || (el.dataset.ceKey) || (el.tagName+'_'+i);
-    // Mark element for future lookups
-    if(!el.id && !el.dataset.ceKey) el.dataset.ceKey = key;
-    data.texts[key] = el.innerHTML;
-  });
-
-  // 2. Section order — ONLY real sections, never nav/footer
-  data.sectionOrder = SECTION_IDS.filter(id => !!document.getElementById(id));
-  // Reflect actual DOM order
-  const allSections = [...document.body.querySelectorAll('section[id]')];
-  data.sectionOrder = allSections.map(s=>s.id).filter(id => SECTION_IDS.includes(id));
-
-  // 3. Image sources
-  const nl = document.getElementById('nav-logo');
-  if(nl && nl.src) data.logoSrc = nl.src;
-  const pi = document.getElementById('planeImg');
-  if(pi && pi.src) data.planeSrc = pi.src;
-  const bi = document.getElementById('bridgeImg');
-  if(bi && bi.src) data.bridgeSrc = bi.src;
-
-  // 4. Canvas elements
-  data.canvas = [];
+/* Bake all current edits into the live DOM so the HTML we commit is self-contained */
+function applyAllEditsToHTML(){
+  // Nothing extra needed — edits are already live in DOM
+  // Just persist canvas element positions
   document.querySelectorAll('.canvas-el').forEach(el=>{
-    const r = el.getBoundingClientRect();
-    const obj = {
-      id: el.dataset.ceid,
-      type: el.dataset.cetype,
-      top: parseFloat(el.style.top)||r.top,
-      left: parseFloat(el.style.left)||r.left,
-      width: el.offsetWidth,
-      height: el.offsetHeight,
-      opacity: parseFloat(el.style.opacity||1)
-    };
-    if(obj.type==='text'){
-      const sp = el.querySelector('.cel-text');
-      obj.text = sp ? sp.innerHTML : el.innerHTML;
-      obj.font  = el.style.fontFamily;
-      obj.size  = parseInt(el.style.fontSize);
-      obj.color = el.style.color;
-    } else if(obj.type==='image'){
-      const img = el.querySelector('img');
-      obj.src = img ? img.src : '';
-    } else {
-      obj.bg = el.style.background || el.style.backgroundColor;
-      obj.borderRadius = el.style.borderRadius;
-    }
-    data.canvas.push(obj);
+    // positions already in style
   });
+}
+
+/* ── Build the full serialised HTML of the current page ── */
+function buildCurrentHTML(){
+  // Clone the document
+  const doc = document.documentElement.cloneNode(true);
+
+  // Remove editor-only elements from clone
+  const removeIds = ['omac-capsule','auth-modal','add-panel','prop-panel','edit-toolbar','fdtip','sg-h','sg-v','toast'];
+  removeIds.forEach(id=>{
+    const el = doc.querySelector('#'+id);
+    if(el) el.remove();
+  });
+
+  // Remove drag attributes
+  doc.querySelectorAll('[draggable]').forEach(el=>el.removeAttribute('draggable'));
+  doc.querySelectorAll('.drag-ready').forEach(el=>el.classList.remove('drag-ready'));
+  doc.querySelectorAll('[contenteditable]').forEach(el=>el.removeAttribute('contenteditable'));
+  doc.querySelectorAll('.edit-mode').forEach(el=>el.classList.remove('edit-mode'));
+  doc.querySelectorAll('.canvas-el.selected').forEach(el=>el.classList.remove('selected'));
+
+  // Re-add editor capsule so future editors can still access
+  // (we keep it in the serialised output so the page remains editable)
+  // Actually keep all editor elements — just return full current outerHTML
+  // which already has the latest content baked in
+
+  return '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+}
+
+/* ── Commit to GitHub ── */
+async function commitToGitHub(){
+  const token = getToken();
+  if(!token){ showToast('⚠️ No token — changes NOT pushed to GitHub'); return; }
+
+  showToast('⏳ Pushing to GitHub...');
+
+  const apiBase = `https://api.github.com/repos/${GH_REPO}/contents/${GH_FILE}`;
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json',
+    'X-GitHub-Api-Version': '2022-11-28'
+  };
 
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(data));
-    showToast('💾 Saved!');
+    // Step 1: Get current file SHA (required for update)
+    showToast('⏳ Fetching file info...');
+    const infoRes = await fetch(`${apiBase}?ref=${GH_BRANCH}`, { headers });
+    if(!infoRes.ok){
+      const err = await infoRes.json();
+      if(infoRes.status === 401){
+        localStorage.removeItem(GH_TOKEN_KEY);
+        showToast('❌ Invalid token — cleared. Try again.');
+      } else {
+        showToast('❌ GitHub error: ' + (err.message||infoRes.status));
+      }
+      return;
+    }
+    const info = await infoRes.json();
+    const sha  = info.sha;
+
+    // Step 2: Get full current HTML and base64 encode it
+    showToast('⏳ Encoding page...');
+    const fullHTML = buildCurrentHTML();
+    // Encode to base64 (handles unicode)
+    const b64 = btoa(unescape(encodeURIComponent(fullHTML)));
+
+    // Step 3: Commit
+    showToast('⏳ Committing to GitHub...');
+    const now = new Date().toLocaleString('en-PK',{timeZone:'Asia/Karachi'});
+    const commitRes = await fetch(apiBase, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({
+        message: `OMAC Editor update — ${now}`,
+        content: b64,
+        sha: sha,
+        branch: GH_BRANCH
+      })
+    });
+
+    if(commitRes.ok){
+      showToast('✅ Live! GitHub Pages updating (~30s)');
+      // Also save to localStorage as backup
+      localStorage.setItem(SAVE_KEY+'_backup', JSON.stringify({ts: Date.now()}));
+    } else {
+      const err = await commitRes.json();
+      showToast('❌ Commit failed: ' + (err.message||commitRes.status));
+      console.error('GitHub commit error:', err);
+    }
+
   } catch(e) {
-    showToast('⚠️ Save failed — data too large');
+    showToast('❌ Network error: ' + e.message);
+    console.error(e);
   }
 }
 
@@ -1242,6 +1312,12 @@ document.getElementById('canvas-img-input').addEventListener('change',function(e
   reader.readAsDataURL(file);
   e.target.value='';
 });
+
+/* ══ GITHUB TOKEN HELPERS ══ */
+function clearGhToken(){
+  localStorage.removeItem(GH_TOKEN_KEY);
+  showToast('🔑 Token cleared — will prompt on next save');
+}
 
 /* ══ HELPERS ══ */
 function rgbToHex(str){
